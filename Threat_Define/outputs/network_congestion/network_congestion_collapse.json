@@ -1,0 +1,26 @@
+{
+  "scenario": "Network Congestion Collapse",
+  "category": "network_congestion",
+  "payload": {
+    "congested_links": 36,
+    "description": "Malicious telemetry replay overloads 36 crosslinks leading to cascading queue buildups and widespread packet loss.",
+    "impact_duration_minutes": 70.0,
+    "mitigation": "Throttle bulk transfers, enforce QoS preemption, and enable dynamic congestion control overrides through SDN policies.",
+    "steps": [
+      "Seed spoofed telemetry bursts on polar relays to force rerouting.",
+      "Exploit routing convergence lag to overload secondary interlinks.",
+      "Trigger cascading backpressure that starves ground station traffic."
+    ],
+    "criticality": 1.7,
+    "generated_by": "deterministic",
+    "scenario": "Network Congestion Collapse",
+    "analysis": "LLM output highlights crosslink saturation and recommends QoS escalation paths.",
+    "category": "network_congestion",
+    "score": 87.03999999999999
+  },
+  "key_parameters": {
+    "congested_links": 36,
+    "impact_duration_minutes": 70.0,
+    "criticality": 1.7
+  }
+}

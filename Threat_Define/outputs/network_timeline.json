@@ -1,0 +1,346 @@
+{
+  "network": "LEO-Mesh-Alpha",
+  "topology_source": "leocraft",
+  "timeline": [
+    {
+      "event": "LEOCraft: 已构建Starlink星地网络拓扑并计算性能指标。",
+      "impact": {}
+    },
+    {
+      "event": "星座详情: 卫星3888颗, 地面站100个, 壳层3个。",
+      "impact": {}
+    },
+    {
+      "event": "LEOCraft性能基线: throughput.scalars.throughput_Gbps=6144.550, throughput.scalars.total_accommodated_flow=34.148, throughput.scalars.NS_selt=6.150, throughput.scalars.EW_selt=3.331, throughput.scalars.NESW_selt=5.112, throughput.scalars.HG_selt=3.158, throughput.scalars.LG_selt=8.029, coverage.scalars.dead_GS_count=0.000, coverage.scalars.GS_coverage_metric=148.794, stretch.scalars.NS_sth=1.357, stretch.scalars.NS_cnt=7.000, stretch.scalars.EW_sth=1.504, stretch.scalars.EW_cnt=8.000, stretch.scalars.NESW_sth=1.253, stretch.scalars.NESW_cnt=6.000, stretch.scalars.LG_sth=1.434, stretch.scalars.LG_cnt=3.500, stretch.scalars.HG_sth=1.181, stretch.scalars.HG_cnt=11.000",
+      "impact": {}
+    },
+    {
+      "event": "LEOCraft仿真数据已导出至: /home/user4/NetTest/Threat_Define/outputs/leocraft_starlink",
+      "impact": {}
+    },
+    {
+      "event": "[代码注入] 执行威胁模型: Network Congestion Collapse",
+      "impact": {}
+    },
+    {
+      "event": "Inter-satellite congestion (generated)",
+      "impact": {
+        "links": 36,
+        "duration_min": 70.0,
+        "criticality": 1.7
+      }
+    },
+    {
+      "event": "威胁注入后重新评估LEOCraft性能: coverage.scalars.GS_coverage_metricΔ=+0.000, coverage.scalars.dead_GS_countΔ=+0.000, stretch.scalars.EW_cntΔ=-0.500, stretch.scalars.EW_sthΔ=-0.006, stretch.scalars.HG_cntΔ=+0.000, stretch.scalars.HG_sthΔ=-0.000, stretch.scalars.LG_cntΔ=+0.000, stretch.scalars.LG_sthΔ=+0.000, stretch.scalars.NESW_cntΔ=+0.000, stretch.scalars.NESW_sthΔ=-0.000, stretch.scalars.NS_cntΔ=+0.000, stretch.scalars.NS_sthΔ=+0.000, throughput.scalars.EW_seltΔ=+0.318, throughput.scalars.HG_seltΔ=+0.006, throughput.scalars.LG_seltΔ=-0.444, throughput.scalars.NESW_seltΔ=-0.165, throughput.scalars.NS_seltΔ=+0.442, throughput.scalars.throughput_GbpsΔ=-7.889, throughput.scalars.total_accommodated_flowΔ=-0.180",
+      "impact": {}
+    },
+    {
+      "event": "LEOCraft性能评估",
+      "impact": {
+        "baseline": {
+          "throughput": {
+            "scalars": {
+              "_traffic_metrics_file": "/home/user4/NetTest/dataset/traffic_metrics/population_only_tm_Gbps_100.json",
+              "throughput_Gbps": 6144.550394609131,
+              "total_accommodated_flow": 34.147620156497254,
+              "NS_selt": 6.150442477876107,
+              "EW_selt": 3.3308714918759232,
+              "NESW_selt": 5.1115421920465565,
+              "HG_selt": 3.1576877703499804,
+              "LG_selt": 8.02901023890785
+            }
+          },
+          "coverage": {
+            "scalars": {
+              "dead_GS_count": 0,
+              "GS_coverage_metric": 148.79394673481124
+            }
+          },
+          "stretch": {
+            "scalars": {
+              "NS_sth": 1.3570676882785122,
+              "NS_cnt": 7.0,
+              "EW_sth": 1.5042080782517577,
+              "EW_cnt": 8.0,
+              "NESW_sth": 1.2529020913038451,
+              "NESW_cnt": 6.0,
+              "LG_sth": 1.4344462047922786,
+              "LG_cnt": 3.5,
+              "HG_sth": 1.180724397652348,
+              "HG_cnt": 11.0
+            }
+          }
+        },
+        "post_threat": {
+          "throughput": {
+            "scalars": {
+              "_traffic_metrics_file": "/home/user4/NetTest/dataset/traffic_metrics/population_only_tm_Gbps_100.json",
+              "throughput_Gbps": 6136.661754445937,
+              "total_accommodated_flow": 33.967923080119704,
+              "NS_selt": 6.592920353982301,
+              "EW_selt": 3.6484490398818314,
+              "NESW_selt": 4.946653734238604,
+              "HG_selt": 3.1635863153755404,
+              "LG_selt": 7.585324232081911
+            }
+          },
+          "coverage": {
+            "scalars": {
+              "dead_GS_count": 0,
+              "GS_coverage_metric": 148.79394673481124
+            }
+          },
+          "stretch": {
+            "scalars": {
+              "NS_sth": 1.3570676882785122,
+              "NS_cnt": 7.0,
+              "EW_sth": 1.4982874177922707,
+              "EW_cnt": 7.5,
+              "NESW_sth": 1.2524720228712605,
+              "NESW_cnt": 6.0,
+              "LG_sth": 1.4344462047922786,
+              "LG_cnt": 3.5,
+              "HG_sth": 1.1804639177012022,
+              "HG_cnt": 11.0
+            }
+          }
+        },
+        "delta": {
+          "coverage.scalars.GS_coverage_metric": 0.0,
+          "coverage.scalars.dead_GS_count": 0.0,
+          "stretch.scalars.EW_cnt": -0.5,
+          "stretch.scalars.EW_sth": -0.005921,
+          "stretch.scalars.HG_cnt": 0.0,
+          "stretch.scalars.HG_sth": -0.00026,
+          "stretch.scalars.LG_cnt": 0.0,
+          "stretch.scalars.LG_sth": 0.0,
+          "stretch.scalars.NESW_cnt": 0.0,
+          "stretch.scalars.NESW_sth": -0.00043,
+          "stretch.scalars.NS_cnt": 0.0,
+          "stretch.scalars.NS_sth": 0.0,
+          "throughput.scalars.EW_selt": 0.317578,
+          "throughput.scalars.HG_selt": 0.005899,
+          "throughput.scalars.LG_selt": -0.443686,
+          "throughput.scalars.NESW_selt": -0.164888,
+          "throughput.scalars.NS_selt": 0.442478,
+          "throughput.scalars.throughput_Gbps": -7.88864,
+          "throughput.scalars.total_accommodated_flow": -0.179697
+        }
+      }
+    }
+  ],
+  "leocraft": {
+    "summary": {
+      "satellites": 3888,
+      "ground_stations": 100,
+      "shells": 3,
+      "shell_details": [
+        {
+          "id": 0,
+          "orbits": 72,
+          "sat_per_orbit": 22,
+          "altitude_m": 550000.0,
+          "inclination_degree": 53.0,
+          "angle_of_elevation_degree": 25.0,
+          "phase_offset": 50.0
+        },
+        {
+          "id": 1,
+          "orbits": 72,
+          "sat_per_orbit": 22,
+          "altitude_m": 540000.0,
+          "inclination_degree": 53.2,
+          "angle_of_elevation_degree": 25.0,
+          "phase_offset": 50.0
+        },
+        {
+          "id": 2,
+          "orbits": 36,
+          "sat_per_orbit": 20,
+          "altitude_m": 570000.0,
+          "inclination_degree": 70.0,
+          "angle_of_elevation_degree": 25.0,
+          "phase_offset": 50.0
+        }
+      ]
+    },
+    "duration_minutes": 8.88,
+    "metrics": {
+      "loss_model": {
+        "type": "FSPL",
+        "frequency_hz": 28500000000.0,
+        "tx_power_dbm": 98.4,
+        "bandwidth_hz": 500000000.0,
+        "g_over_t": 13.6,
+        "tx_antenna_gain_db": 34.5
+      },
+      "traffic_model": "dataset/traffic_metrics/population_only_tm_Gbps_100.json",
+      "throughput_class": "Throughput",
+      "coverage_class": "Coverage",
+      "stretch_class": "Stretch",
+      "performance_baseline": {
+        "throughput": {
+          "scalars": {
+            "_traffic_metrics_file": "/home/user4/NetTest/dataset/traffic_metrics/population_only_tm_Gbps_100.json",
+            "throughput_Gbps": 6144.550394609131,
+            "total_accommodated_flow": 34.147620156497254,
+            "NS_selt": 6.150442477876107,
+            "EW_selt": 3.3308714918759232,
+            "NESW_selt": 5.1115421920465565,
+            "HG_selt": 3.1576877703499804,
+            "LG_selt": 8.02901023890785
+          }
+        },
+        "coverage": {
+          "scalars": {
+            "dead_GS_count": 0,
+            "GS_coverage_metric": 148.79394673481124
+          }
+        },
+        "stretch": {
+          "scalars": {
+            "NS_sth": 1.3570676882785122,
+            "NS_cnt": 7.0,
+            "EW_sth": 1.5042080782517577,
+            "EW_cnt": 8.0,
+            "NESW_sth": 1.2529020913038451,
+            "NESW_cnt": 6.0,
+            "LG_sth": 1.4344462047922786,
+            "LG_cnt": 3.5,
+            "HG_sth": 1.180724397652348,
+            "HG_cnt": 11.0
+          }
+        }
+      },
+      "congested_links": 36,
+      "congested_link_ids": [
+        "LINK-0001",
+        "LINK-0002",
+        "LINK-0003",
+        "LINK-0004",
+        "LINK-0005",
+        "LINK-0006",
+        "LINK-0007",
+        "LINK-0008",
+        "LINK-0009",
+        "LINK-0010",
+        "LINK-0011",
+        "LINK-0012",
+        "LINK-0013",
+        "LINK-0014",
+        "LINK-0015",
+        "LINK-0016",
+        "LINK-0017",
+        "LINK-0018",
+        "LINK-0019",
+        "LINK-0020",
+        "LINK-0021",
+        "LINK-0022",
+        "LINK-0023",
+        "LINK-0024",
+        "LINK-0025",
+        "LINK-0026",
+        "LINK-0027",
+        "LINK-0028",
+        "LINK-0029",
+        "LINK-0030",
+        "LINK-0031",
+        "LINK-0032",
+        "LINK-0033",
+        "LINK-0034",
+        "LINK-0035",
+        "LINK-0036"
+      ],
+      "performance_after_threat": {
+        "throughput": {
+          "scalars": {
+            "_traffic_metrics_file": "/home/user4/NetTest/dataset/traffic_metrics/population_only_tm_Gbps_100.json",
+            "throughput_Gbps": 6136.661754445937,
+            "total_accommodated_flow": 33.967923080119704,
+            "NS_selt": 6.592920353982301,
+            "EW_selt": 3.6484490398818314,
+            "NESW_selt": 4.946653734238604,
+            "HG_selt": 3.1635863153755404,
+            "LG_selt": 7.585324232081911
+          }
+        },
+        "coverage": {
+          "scalars": {
+            "dead_GS_count": 0,
+            "GS_coverage_metric": 148.79394673481124
+          }
+        },
+        "stretch": {
+          "scalars": {
+            "NS_sth": 1.3570676882785122,
+            "NS_cnt": 7.0,
+            "EW_sth": 1.4982874177922707,
+            "EW_cnt": 7.5,
+            "NESW_sth": 1.2524720228712605,
+            "NESW_cnt": 6.0,
+            "LG_sth": 1.4344462047922786,
+            "LG_cnt": 3.5,
+            "HG_sth": 1.1804639177012022,
+            "HG_cnt": 11.0
+          }
+        }
+      },
+      "performance_delta": {
+        "coverage.scalars.GS_coverage_metric": 0.0,
+        "coverage.scalars.dead_GS_count": 0.0,
+        "stretch.scalars.EW_cnt": -0.5,
+        "stretch.scalars.EW_sth": -0.005921,
+        "stretch.scalars.HG_cnt": 0.0,
+        "stretch.scalars.HG_sth": -0.00026,
+        "stretch.scalars.LG_cnt": 0.0,
+        "stretch.scalars.LG_sth": 0.0,
+        "stretch.scalars.NESW_cnt": 0.0,
+        "stretch.scalars.NESW_sth": -0.00043,
+        "stretch.scalars.NS_cnt": 0.0,
+        "stretch.scalars.NS_sth": 0.0,
+        "throughput.scalars.EW_selt": 0.317578,
+        "throughput.scalars.HG_selt": 0.005899,
+        "throughput.scalars.LG_selt": -0.443686,
+        "throughput.scalars.NESW_selt": -0.164888,
+        "throughput.scalars.NS_selt": 0.442478,
+        "throughput.scalars.throughput_Gbps": -7.88864,
+        "throughput.scalars.total_accommodated_flow": -0.179697
+      }
+    },
+    "performance_baseline": {
+      "throughput": {
+        "scalars": {
+          "_traffic_metrics_file": "/home/user4/NetTest/dataset/traffic_metrics/population_only_tm_Gbps_100.json",
+          "throughput_Gbps": 6144.550394609131,
+          "total_accommodated_flow": 34.147620156497254,
+          "NS_selt": 6.150442477876107,
+          "EW_selt": 3.3308714918759232,
+          "NESW_selt": 5.1115421920465565,
+          "HG_selt": 3.1576877703499804,
+          "LG_selt": 8.02901023890785
+        }
+      },
+      "coverage": {
+        "scalars": {
+          "dead_GS_count": 0,
+          "GS_coverage_metric": 148.79394673481124
+        }
+      },
+      "stretch": {
+        "scalars": {
+          "NS_sth": 1.3570676882785122,
+          "NS_cnt": 7.0,
+          "EW_sth": 1.5042080782517577,
+          "EW_cnt": 8.0,
+          "NESW_sth": 1.2529020913038451,
+          "NESW_cnt": 6.0,
+          "LG_sth": 1.4344462047922786,
+          "LG_cnt": 3.5,
+          "HG_sth": 1.180724397652348,
+          "HG_cnt": 11.0
+        }
+      }
+    },
+    "export_directory": "/home/user4/NetTest/Threat_Define/outputs/leocraft_starlink"
+  }
+}
