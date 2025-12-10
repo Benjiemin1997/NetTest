@@ -61,6 +61,9 @@ class SolarStormNodeOutageModel:
         if self.end_time is not None and t > self.end_time:
             return []
 
+        inline by marking node status and activity flags when available.
+        """
+
         satellites = list(self._extract_satellites(sim_state))
         changed: List[str] = []
         for idx, sat in enumerate(satellites):
