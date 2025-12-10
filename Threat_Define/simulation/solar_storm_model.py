@@ -61,9 +61,6 @@ class SolarStormNodeOutageModel:
         if self.end_time is not None and t > self.end_time:
             return []
 
-        inline by marking node status and activity flags when available.
-        """
-
         satellites = list(self._extract_satellites(sim_state))
         changed: List[str] = []
         for idx, sat in enumerate(satellites):
@@ -81,7 +78,7 @@ class SolarStormNodeOutageModel:
                     self.sat_state[sat_id] = 1
                     self._set_status(sat, "failed")
                     self._mark_graph_node(sim_state, sat_id, active=False)
-                    self._disconnect_satellite(sim_state, sat_id)
+                    self._mark_runtime_mask(sim_state, sat_id, active=False)
                     changed.append(sat_id)
                 else:
                     self._set_status(sat, "healthy")
@@ -92,12 +89,12 @@ class SolarStormNodeOutageModel:
                     self.sat_state[sat_id] = 0
                     self._set_status(sat, "healthy")
                     self._mark_graph_node(sim_state, sat_id, active=True)
-                    self._restore_satellite(sim_state, sat_id)
+                    self._mark_runtime_mask(sim_state, sat_id, active=True)
                     changed.append(sat_id)
                 else:
                     self._set_status(sat, "failed")
                     self._mark_graph_node(sim_state, sat_id, active=False)
-                    self._disconnect_satellite(sim_state, sat_id)
+                    self._mark_runtime_mask(sim_state, sat_id, active=False)
 
         return changed
 
@@ -177,6 +174,22 @@ class SolarStormNodeOutageModel:
                 graph.nodes[sat_id]["status"] = "failed" if not active else "healthy"
         except Exception:
             return
+
+    def _mark_runtime_mask(self, sim_state: object, sat_id: str, *, active: bool) -> None:
+        """Update the LEONetworkModel runtime mask when available."""
+
+        marker = getattr(sim_state, "mark_satellite_status", None)
+        if callable(marker):
+            try:
+                marker(sat_id, active=active, reason="solar_storm_outage")
+                return
+            except Exception:
+                pass
+        # Fallback: mutate the graph directly if no runtime mask exists.
+        if active:
+            self._restore_satellite(sim_state, sat_id)
+        else:
+            self._disconnect_satellite(sim_state, sat_id)
 
     def _disconnect_satellite(self, sim_state: object, sat_id: str) -> None:
         """Physically remove incident edges so LEOCraft routing loses paths."""
