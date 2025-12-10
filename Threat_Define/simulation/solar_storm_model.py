@@ -20,8 +20,11 @@ class SolarStormNodeOutageModel:
     c: float = 0.2
     h0: float = 550.0
     dt: float = 1.0
+    start_time: int | None = None
+    end_time: int | None = None
     rng: random.Random = field(default_factory=random.Random)
     sat_state: Dict[str, int] = field(default_factory=dict)
+    _disabled_edges: Dict[str, List[Tuple[str, str]]] = field(default_factory=dict)
 
     def f_lat(self, magnetic_latitude_deg: float) -> float:
         """Compute the geomagnetic latitude enhancement factor."""
@@ -47,6 +50,17 @@ class SolarStormNodeOutageModel:
         ``sim_state`` can be the LEONetworkModel instance, a constellation
         container with a ``satellites`` attribute, or a plain iterable of
         satellite-like objects. The model will mutate node/link availability
+        inline by marking node status and activity flags when available and by
+        disconnecting failed satellites from the underlying LEOCraft graph so
+        routing/performance metrics will observe the outage.
+        """
+
+        # Respect configured active window so we do not inject outside the threat duration.
+        if self.start_time is not None and t < self.start_time:
+            return []
+        if self.end_time is not None and t > self.end_time:
+            return []
+
         inline by marking node status and activity flags when available.
         """
 
@@ -67,6 +81,7 @@ class SolarStormNodeOutageModel:
                     self.sat_state[sat_id] = 1
                     self._set_status(sat, "failed")
                     self._mark_graph_node(sim_state, sat_id, active=False)
+                    self._disconnect_satellite(sim_state, sat_id)
                     changed.append(sat_id)
                 else:
                     self._set_status(sat, "healthy")
@@ -77,10 +92,12 @@ class SolarStormNodeOutageModel:
                     self.sat_state[sat_id] = 0
                     self._set_status(sat, "healthy")
                     self._mark_graph_node(sim_state, sat_id, active=True)
+                    self._restore_satellite(sim_state, sat_id)
                     changed.append(sat_id)
                 else:
                     self._set_status(sat, "failed")
                     self._mark_graph_node(sim_state, sat_id, active=False)
+                    self._disconnect_satellite(sim_state, sat_id)
 
         return changed
 
@@ -158,6 +175,48 @@ class SolarStormNodeOutageModel:
             if sat_id in graph.nodes:
                 graph.nodes[sat_id]["active"] = active
                 graph.nodes[sat_id]["status"] = "failed" if not active else "healthy"
+        except Exception:
+            return
+
+    def _disconnect_satellite(self, sim_state: object, sat_id: str) -> None:
+        """Physically remove incident edges so LEOCraft routing loses paths."""
+
+        graph = self._get_graph(sim_state)
+        if graph is None:
+            return
+        if sat_id not in graph.nodes:
+            return
+        try:
+            incident = list(graph.edges(sat_id))
+            if incident:
+                # Cache edges so they can be restored if the satellite recovers.
+                self._disabled_edges.setdefault(sat_id, [])
+                # Avoid duplicating edges in the cache across repeated failures.
+                existing = set(self._disabled_edges[sat_id])
+                for edge in incident:
+                    ordered = tuple(edge)
+                    if ordered not in existing:
+                        self._disabled_edges[sat_id].append(ordered)
+                graph.remove_edges_from(incident)
+        except Exception:
+            return
+
+    def _restore_satellite(self, sim_state: object, sat_id: str) -> None:
+        """Reattach previously removed ISLs when a node recovers."""
+
+        graph = self._get_graph(sim_state)
+        if graph is None:
+            return
+        cached = self._disabled_edges.get(sat_id, [])
+        if not cached:
+            return
+        try:
+            for edge in cached:
+                if edge[0] not in graph.nodes or edge[1] not in graph.nodes:
+                    continue
+                if not graph.has_edge(*edge):
+                    graph.add_edge(*edge)
+            self._disabled_edges[sat_id] = []
         except Exception:
             return
 
