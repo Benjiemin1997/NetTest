@@ -187,6 +187,33 @@ class LEONetworkModel:
         if reason:
             self.log_event(f"Runtime mask updated for {sid}: {'online' if active else 'offline'} ({reason})")
 
+    def verify_satellite_removal(self, sat_id: str) -> Dict[str, object]:
+        """Check whether a satellite has been dynamically removed from the LEO graph.
+
+        This uses both the runtime outage mask and LEOCraft's graph-level helpers to
+        confirm that a simulated failure is reflected in the underlying network
+        structures. The result dict can be used by threat models or tests to assert
+        that node deletions took effect.
+        """
+
+        sid = str(sat_id)
+        graph = self._leocraft_graph()
+        constellation = getattr(self.artifacts, "constellation", None) if self.artifacts else None
+
+        mask_offline = sid in self.runtime_state.get("offline_nodes", set())
+        graph_missing = graph is None or not graph.has_node(sid)
+
+        constellation_report = None
+        if constellation and hasattr(constellation, "check_satellite_removed"):
+            constellation_report = constellation.check_satellite_removed(sid)
+
+        return {
+            "runtime_masked": mask_offline,
+            "graph_missing": graph_missing,
+            "constellation_report": constellation_report,
+            "effective": mask_offline or graph_missing or bool(constellation_report and constellation_report.get("removed")),
+        }
+
     def _append_no_path_records(
         self, offline_nodes: List[str], *, reason: str
     ) -> Optional[Path]:
