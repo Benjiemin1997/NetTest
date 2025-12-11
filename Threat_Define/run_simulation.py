@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 from pathlib import Path
 import sys
 
@@ -18,6 +19,7 @@ from agents.evaluators import SimpleImpactEvaluator
 from agents.protocol_agent import ProtocolAttackAgent
 from agents.satellite_agent import SatelliteDamageAgent
 from llm_client import LLMScenarioGenerator
+from simulation.solar_storm_model import SolarStormNodeOutageModel
 from simulation.environment import LEONetworkModel
 from simulation.evaluation import (
     EvaluationRecorder,
@@ -33,6 +35,14 @@ from simulation.scenario_repository import ScenarioRepository
 from threat_scenarios.base import ScenarioContext
 
 
+# Registry of supported threat models so they can be constructed from JSON configs.
+THREAT_REGISTRY = {
+    "solar_storm_node_outage": SolarStormNodeOutageModel,
+    # "congestion_attack": CongestionModel,
+    # "protocol_attack": ProtocolAttackModel,
+}
+
+
 def build_context() -> ScenarioContext:
     """Construct a default scenario context for demonstration purposes."""
     return ScenarioContext(
@@ -41,6 +51,48 @@ def build_context() -> ScenarioContext:
         ground_stations=25,
         critical_services=["navigation", "earth-observation", "broadband"],
     )
+
+
+def load_threat_json(config_path: Path) -> list[dict]:
+    """Load threat model configuration from a JSON document.
+
+    The loader is tolerant of two shapes:
+
+    1) A list of threat configuration dictionaries, each containing ``type`` and
+       optional ``params`` keys (preferred).
+    2) A legacy wrapper object where the list is nested under a ``threats`` key
+       or the document itself represents a single threat configuration.
+    """
+
+    if not config_path.exists():
+        return []
+
+    payload = json.loads(config_path.read_text(encoding="utf-8"))
+    if isinstance(payload, list):
+        return payload
+    if isinstance(payload, dict):
+        if "threats" in payload and isinstance(payload["threats"], list):
+            return payload["threats"]
+        if "type" in payload:
+            return [payload]
+    raise ValueError(f"Threat JSON格式不符合要求: {config_path}")
+
+
+def build_threat_models(threat_configs: list[dict]):
+    """
+    根据 multi-agent 生成的 JSON 配置，构建本次仿真的威胁模型实例列表。
+    """
+
+    models = []
+    for cfg in threat_configs:
+        ttype = cfg["type"]
+        params = cfg.get("params", {})
+        if ttype not in THREAT_REGISTRY:
+            raise ValueError(f"Unknown threat type: {ttype}")
+        cls = THREAT_REGISTRY[ttype]
+        model = cls(**params)
+        models.append(model)
+    return models
 
 
 def parse_args() -> argparse.Namespace:
@@ -158,6 +210,20 @@ def main() -> None:
     scenario_path = repo.save(best_agent.scenario, best_payload)
     log_status(f"威胁场景JSON已保存: {scenario_path}")
 
+    # 从 multi-agent 生成的 JSON 文件中读取威胁场景，并构建威胁模型实例
+    try:
+        threat_configs = load_threat_json(scenario_path)
+    except ValueError as exc:
+        log_status(f"威胁配置解析失败，将跳过物理威胁模型注入: {exc}")
+        threat_configs = []
+    threat_models = build_threat_models(threat_configs) if threat_configs else []
+    if threat_models:
+        log_status(
+            f"已加载威胁模型 {len(threat_models)} 个: {[cfg['type'] for cfg in threat_configs]}"
+        )
+    else:
+        log_status("未加载额外威胁模型，继续执行默认脚本")
+
     codegen = ThreatCodegenAgent(output_dir / "generated_code")
     script_path, executor = codegen.build_script(best_agent.scenario, best_payload)
     log_status(f"威胁脚本已生成: {script_path}")
@@ -171,6 +237,39 @@ def main() -> None:
     log_status("初始化LEO网络模型完成，准备执行威胁脚本注入网络")
     executor(network)
     log_status("威胁脚本执行完毕，开始评估网络性能变化")
+
+    # === Threat model execution loop ===
+    sim_state = network  # sim_state encapsulates the constellation, metrics, and topology
+    verified_offline: Set[str] = set()
+    num_steps = int(best_payload.get("duration_steps") or best_payload.get("duration") or 1)
+    for t in range(num_steps):
+        # 1) 调用所有威胁模型，更新 sim_state（包含节点/链路）
+        for model in threat_models:
+            model.update(sim_state, t)
+
+        # 1.5) 在节点损毁后检查是否已从LEO网络中删除（runtime mask + graph）
+        offline_nodes = set()
+        try:
+            offline_nodes = set(str(n) for n in sim_state.runtime_state.get("offline_nodes", set()))
+        except Exception:
+            offline_nodes = set()
+
+        newly_offline = offline_nodes - verified_offline
+        for sat_id in sorted(newly_offline):
+            check = sim_state.verify_satellite_removal(sat_id)
+            log_status(
+                "卫星删除校验: {sid} -> {status} (mask={mask}, graph_missing={missing})".format(
+                    sid=sat_id,
+                    status="有效" if check.get("effective") else "未生效",
+                    mask=check.get("runtime_masked"),
+                    missing=check.get("graph_missing"),
+                )
+            )
+        verified_offline.update(newly_offline)
+
+        # 2) （可选）路由和性能计算，若可用则在每步刷新指标
+        if network.artifacts:
+            network.artifacts.recompute_performance()
     evaluation = network.evaluate_performance_metrics()
     network_path = output_dir / "network_timeline.json"
     network.save(network_path)
