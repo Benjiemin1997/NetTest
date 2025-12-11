@@ -240,11 +240,32 @@ def main() -> None:
 
     # === Threat model execution loop ===
     sim_state = network  # sim_state encapsulates the constellation, metrics, and topology
+    verified_offline: Set[str] = set()
     num_steps = int(best_payload.get("duration_steps") or best_payload.get("duration") or 1)
     for t in range(num_steps):
         # 1) 调用所有威胁模型，更新 sim_state（包含节点/链路）
         for model in threat_models:
             model.update(sim_state, t)
+
+        # 1.5) 在节点损毁后检查是否已从LEO网络中删除（runtime mask + graph）
+        offline_nodes = set()
+        try:
+            offline_nodes = set(str(n) for n in sim_state.runtime_state.get("offline_nodes", set()))
+        except Exception:
+            offline_nodes = set()
+
+        newly_offline = offline_nodes - verified_offline
+        for sat_id in sorted(newly_offline):
+            check = sim_state.verify_satellite_removal(sat_id)
+            log_status(
+                "卫星删除校验: {sid} -> {status} (mask={mask}, graph_missing={missing})".format(
+                    sid=sat_id,
+                    status="有效" if check.get("effective") else "未生效",
+                    mask=check.get("runtime_masked"),
+                    missing=check.get("graph_missing"),
+                )
+            )
+        verified_offline.update(newly_offline)
 
         # 2) （可选）路由和性能计算，若可用则在每步刷新指标
         if network.artifacts:
