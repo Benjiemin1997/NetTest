@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import argparse
 import json
-from pathlib import Path
+import random
 import sys
-
+import time
+from itertools import combinations
+from pathlib import Path
 from typing import Dict, Optional, Set, Tuple
 from itertools import combinations
 
@@ -109,6 +111,12 @@ def parse_args() -> argparse.Namespace:
         default="LEO-Mesh-Alpha",
         help="Name of the simulated LEO network instance.",
     )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help="Random seed for reproducible agent generation and scoring runs.",
+    )
     return parser.parse_args()
 
 def log_status(message: str) -> None:
@@ -184,6 +192,56 @@ def _compute_pair_stats(graph: Optional[nx.Graph], gs_nodes: Set[str]) -> Dict[T
     return stats
 
 
+def _extract_metric(flat_snapshot: Optional[Dict[str, float]], keyword: str) -> float:
+    if not flat_snapshot:
+        return 0.0
+    keyword = keyword.lower()
+    for key, value in flat_snapshot.items():
+        if keyword in key.lower():
+            try:
+                return float(value)
+            except Exception:
+                continue
+    return 0.0
+
+
+def _score_from_performance(
+    baseline_flat: Dict[str, float], attacked_flat: Dict[str, float]
+) -> Tuple[float, Dict[str, float]]:
+    """Compute a feedback-driven score using performance deltas.
+
+    This promotes scenarios that materially degrade throughput/coverage and increase
+    path stretch. The returned metrics dict is attached to the payload for traceability.
+    """
+
+    baseline_thpt = _extract_total_throughput(baseline_flat)
+    attacked_thpt = _extract_total_throughput(attacked_flat)
+    thpt_loss = max(0.0, baseline_thpt - attacked_thpt)
+
+    baseline_cov = _extract_metric(baseline_flat, "coverage")
+    attacked_cov = _extract_metric(attacked_flat, "coverage")
+    coverage_loss = max(0.0, baseline_cov - attacked_cov)
+
+    baseline_stretch = _extract_metric(baseline_flat, "stretch")
+    attacked_stretch = _extract_metric(attacked_flat, "stretch")
+    stretch_increase = max(0.0, attacked_stretch - baseline_stretch)
+
+    # Weighted score emphasizing throughput/coverage degradation and stretch increase.
+    score = thpt_loss * 0.6 + coverage_loss * 100.0 + stretch_increase * 10.0
+    metrics = {
+        "baseline_throughput": baseline_thpt,
+        "attacked_throughput": attacked_thpt,
+        "throughput_loss": thpt_loss,
+        "baseline_coverage": baseline_cov,
+        "attacked_coverage": attacked_cov,
+        "coverage_loss": coverage_loss,
+        "baseline_stretch": baseline_stretch,
+        "attacked_stretch": attacked_stretch,
+        "stretch_increase": stretch_increase,
+    }
+    return score, metrics
+
+
 def _build_robustness_results(
         network: LEONetworkModel,
         evaluation: Optional[Dict[str, object]],
@@ -229,6 +287,18 @@ def main() -> None:
     output_dir = args.output.resolve()
     args.output = output_dir
     log_status(f"输出目录规范化: {output_dir}")
+
+    # Seed control so per-run randomness can be reproduced and intentionally varied.
+    seed = args.seed if args.seed is not None else int(time.time())
+    random.seed(seed)
+    try:  # numpy is optional in this environment
+        import numpy as np  # type: ignore
+
+        np.random.seed(seed)
+    except Exception:
+        pass
+    log_status(f"使用随机种子: {seed}")
+
     evaluator = SimpleImpactEvaluator()
     generator = LLMScenarioGenerator()
     agents = [
@@ -240,7 +310,32 @@ def main() -> None:
     context = build_context()
     log_status("已构建默认的仿真上下文，开始运行多智能体生成威胁场景")
 
-    best_agent, best_payload, run_stats = manager.run(context)
+    def simulate_and_score(agent, payload):
+        """Closed-loop scoring using a lightweight per-agent simulation."""
+
+        scratch_dir = output_dir / "scoring_runs" / agent.name
+        scratch_dir.mkdir(parents=True, exist_ok=True)
+        network = LEONetworkModel(
+            f"{args.network_name}-scoring-{agent.name}",
+            context,
+            leocraft_output=scratch_dir / "leocraft_starlink",
+        )
+        agent.act(network, payload)
+        evaluation = network.evaluate_performance_metrics()
+        if not evaluation:
+            return agent.evaluate(payload), {}
+        baseline_flat = flatten_performance_snapshot(evaluation.get("baseline", {}))
+        attacked_flat = flatten_performance_snapshot(evaluation.get("post_threat", {}))
+        score, perf_metrics = _score_from_performance(baseline_flat, attacked_flat)
+        return score, {
+            "evaluation": perf_metrics,
+            "baseline_flat": baseline_flat,
+            "attacked_flat": attacked_flat,
+            "seed": seed,
+        }
+
+    best_agent, best_payload, run_stats = manager.run(context, score_callback=simulate_and_score)
+    best_payload.setdefault("seed", seed)
     log_status(f"多智能体完成评分，选中代理: {best_agent.name}, 场景: {best_agent.scenario.name}")
 
     repo = ScenarioRepository(output_dir)
