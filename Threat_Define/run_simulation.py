@@ -8,6 +8,7 @@ import time
 from itertools import combinations
 from pathlib import Path
 from typing import Dict, Optional, Set, Tuple
+from itertools import combinations
 
 import networkx as nx
 import pandas as pd
@@ -45,6 +46,14 @@ from threat_scenarios.base import ScenarioContext
 assert (
     "score_callback" in MultiAgentManager.run.__code__.co_varnames
 ), "Imported MultiAgentManager.run does not accept score_callback; check Threat_Define.simulation import path."
+
+
+# Registry of supported threat models so they can be constructed from JSON configs.
+THREAT_REGISTRY = {
+    "solar_storm_node_outage": SolarStormNodeOutageModel,
+    # "congestion_attack": CongestionModel,
+    # "protocol_attack": ProtocolAttackModel,
+}
 
 
 # Registry of supported threat models so they can be constructed from JSON configs.
