@@ -1,16 +1,22 @@
 from __future__ import annotations
 
 import argparse
-from pathlib import Path
+import json
+import random
 import sys
-
+import time
+from itertools import combinations
+from pathlib import Path
 from typing import Dict, Optional, Set, Tuple
 
 import networkx as nx
 import pandas as pd
 PROJECT_ROOT = Path(__file__).resolve().parent
+REPO_ROOT = PROJECT_ROOT.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
 from agents.codegen_agent import ThreatCodegenAgent
 from agents.congestion_agent import CongestionCollapseAgent
@@ -18,6 +24,8 @@ from agents.evaluators import SimpleImpactEvaluator
 from agents.protocol_agent import ProtocolAttackAgent
 from agents.satellite_agent import SatelliteDamageAgent
 from llm_client import LLMScenarioGenerator
+from Threat_Define.simulation.multi_agent_manager import MultiAgentManager
+from simulation.solar_storm_model import SolarStormNodeOutageModel
 from simulation.environment import LEONetworkModel
 from simulation.evaluation import (
     EvaluationRecorder,
@@ -27,10 +35,24 @@ from simulation.evaluation import (
     summarize_delta,
 )
 from simulation.leocraft_starlink import flatten_performance_snapshot
-from simulation.robustness_metrics import RobustnessEvaluator
-from simulation.multi_agent_manager import MultiAgentManager
+from simulation.robustness_metrics import PairStats, RobustnessEvaluator
 from simulation.scenario_repository import ScenarioRepository
 from threat_scenarios.base import ScenarioContext
+
+# Ensure we are importing the MultiAgentManager implementation that supports
+# score_callback to avoid regressions if another module named "simulation"
+# shadows the intended package.
+assert (
+    "score_callback" in MultiAgentManager.run.__code__.co_varnames
+), "Imported MultiAgentManager.run does not accept score_callback; check Threat_Define.simulation import path."
+
+
+# Registry of supported threat models so they can be constructed from JSON configs.
+THREAT_REGISTRY = {
+    "solar_storm_node_outage": SolarStormNodeOutageModel,
+    # "congestion_attack": CongestionModel,
+    # "protocol_attack": ProtocolAttackModel,
+}
 
 
 def build_context() -> ScenarioContext:
@@ -41,6 +63,48 @@ def build_context() -> ScenarioContext:
         ground_stations=25,
         critical_services=["navigation", "earth-observation", "broadband"],
     )
+
+
+def load_threat_json(config_path: Path) -> list[dict]:
+    """Load threat model configuration from a JSON document.
+
+    The loader is tolerant of two shapes:
+
+    1) A list of threat configuration dictionaries, each containing ``type`` and
+       optional ``params`` keys (preferred).
+    2) A legacy wrapper object where the list is nested under a ``threats`` key
+       or the document itself represents a single threat configuration.
+    """
+
+    if not config_path.exists():
+        return []
+
+    payload = json.loads(config_path.read_text(encoding="utf-8"))
+    if isinstance(payload, list):
+        return payload
+    if isinstance(payload, dict):
+        if "threats" in payload and isinstance(payload["threats"], list):
+            return payload["threats"]
+        if "type" in payload:
+            return [payload]
+    raise ValueError(f"Threat JSON格式不符合要求: {config_path}")
+
+
+def build_threat_models(threat_configs: list[dict]):
+    """
+    根据 multi-agent 生成的 JSON 配置，构建本次仿真的威胁模型实例列表。
+    """
+
+    models = []
+    for cfg in threat_configs:
+        ttype = cfg["type"]
+        params = cfg.get("params", {})
+        if ttype not in THREAT_REGISTRY:
+            raise ValueError(f"Unknown threat type: {ttype}")
+        cls = THREAT_REGISTRY[ttype]
+        model = cls(**params)
+        models.append(model)
+    return models
 
 
 def parse_args() -> argparse.Namespace:
@@ -55,6 +119,12 @@ def parse_args() -> argparse.Namespace:
         "--network-name",
         default="LEO-Mesh-Alpha",
         help="Name of the simulated LEO network instance.",
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help="Random seed for reproducible agent generation and scoring runs.",
     )
     return parser.parse_args()
 
@@ -99,6 +169,88 @@ def _collect_attack_nodes(network: LEONetworkModel) -> Set[str]:
     return set()
 
 
+def _compute_pair_stats(graph: Optional[nx.Graph], gs_nodes: Set[str]) -> Dict[Tuple[str, str], PairStats]:
+    """Lightweight reachability and path stats for GS pairs to avoid empty metrics.
+
+    When LEOCraft does not surface per-pair measurements, we derive basic
+    connectivity/latency using the current graph so robustness metrics (SRR/DPR/SI/HI)
+    have meaningful inputs instead of defaulting to zeros.
+    """
+
+    if graph is None or not gs_nodes:
+        return {}
+
+    stats: Dict[Tuple[str, str], PairStats] = {}
+    for src, dst in combinations(sorted(gs_nodes), 2):
+        reachable = False
+        latency = 0.0
+        hops = 0
+        stretch = 0.0
+        try:
+            path = nx.shortest_path(graph, source=src, target=dst, weight="weight")
+            reachable = True
+            hops = max(0, len(path) - 1)
+            try:
+                latency = float(nx.shortest_path_length(graph, source=src, target=dst, weight="weight"))
+            except Exception:
+                latency = float(hops)
+            stretch = latency
+        except (nx.NetworkXNoPath, nx.NodeNotFound):
+            reachable = False
+        stats[(src, dst)] = PairStats(reachable=reachable, latency=latency, stretch=stretch, hops=hops)
+    return stats
+
+
+def _extract_metric(flat_snapshot: Optional[Dict[str, float]], keyword: str) -> float:
+    if not flat_snapshot:
+        return 0.0
+    keyword = keyword.lower()
+    for key, value in flat_snapshot.items():
+        if keyword in key.lower():
+            try:
+                return float(value)
+            except Exception:
+                continue
+    return 0.0
+
+
+def _score_from_performance(
+    baseline_flat: Dict[str, float], attacked_flat: Dict[str, float]
+) -> Tuple[float, Dict[str, float]]:
+    """Compute a feedback-driven score using performance deltas.
+
+    This promotes scenarios that materially degrade throughput/coverage and increase
+    path stretch. The returned metrics dict is attached to the payload for traceability.
+    """
+
+    baseline_thpt = _extract_total_throughput(baseline_flat)
+    attacked_thpt = _extract_total_throughput(attacked_flat)
+    thpt_loss = max(0.0, baseline_thpt - attacked_thpt)
+
+    baseline_cov = _extract_metric(baseline_flat, "coverage")
+    attacked_cov = _extract_metric(attacked_flat, "coverage")
+    coverage_loss = max(0.0, baseline_cov - attacked_cov)
+
+    baseline_stretch = _extract_metric(baseline_flat, "stretch")
+    attacked_stretch = _extract_metric(attacked_flat, "stretch")
+    stretch_increase = max(0.0, attacked_stretch - baseline_stretch)
+
+    # Weighted score emphasizing throughput/coverage degradation and stretch increase.
+    score = thpt_loss * 0.6 + coverage_loss * 100.0 + stretch_increase * 10.0
+    metrics = {
+        "baseline_throughput": baseline_thpt,
+        "attacked_throughput": attacked_thpt,
+        "throughput_loss": thpt_loss,
+        "baseline_coverage": baseline_cov,
+        "attacked_coverage": attacked_cov,
+        "coverage_loss": coverage_loss,
+        "baseline_stretch": baseline_stretch,
+        "attacked_stretch": attacked_stretch,
+        "stretch_increase": stretch_increase,
+    }
+    return score, metrics
+
+
 def _build_robustness_results(
         network: LEONetworkModel,
         evaluation: Optional[Dict[str, object]],
@@ -113,8 +265,12 @@ def _build_robustness_results(
     baseline_snapshot = evaluation.get("baseline", {}) if evaluation else {}
     attacked_snapshot = evaluation.get("post_threat", {}) if evaluation else {}
 
+    baseline_graph = getattr(network, "_baseline_graph", None)
+    baseline_stats = _compute_pair_stats(baseline_graph if isinstance(baseline_graph, nx.Graph) else attacked_graph, gs_nodes)
+    attacked_stats = _compute_pair_stats(attacked_graph, gs_nodes)
+
     baseline_result: Dict[str, object] = {
-        "pair_stats": {},
+        "pair_stats": baseline_stats,
         "coverage": {},
         "total_throughput": _extract_total_throughput(baseline_flat),
         "throughput_by_gs": {},
@@ -122,7 +278,7 @@ def _build_robustness_results(
         "gs_nodes": gs_nodes,
     }
     attacked_result: Dict[str, object] = {
-        "pair_stats": {},
+        "pair_stats": attacked_stats,
         "coverage": {},
         "total_throughput": _extract_total_throughput(attacked_flat),
         "throughput_by_gs": {},
@@ -140,6 +296,18 @@ def main() -> None:
     output_dir = args.output.resolve()
     args.output = output_dir
     log_status(f"输出目录规范化: {output_dir}")
+
+    # Seed control so per-run randomness can be reproduced and intentionally varied.
+    seed = args.seed if args.seed is not None else int(time.time())
+    random.seed(seed)
+    try:  # numpy is optional in this environment
+        import numpy as np  # type: ignore
+
+        np.random.seed(seed)
+    except Exception:
+        pass
+    log_status(f"使用随机种子: {seed}")
+
     evaluator = SimpleImpactEvaluator()
     generator = LLMScenarioGenerator()
     agents = [
@@ -151,12 +319,53 @@ def main() -> None:
     context = build_context()
     log_status("已构建默认的仿真上下文，开始运行多智能体生成威胁场景")
 
-    best_agent, best_payload, run_stats = manager.run(context)
+    def simulate_and_score(agent, payload):
+        """Closed-loop scoring using a lightweight per-agent simulation."""
+
+        scratch_dir = output_dir / "scoring_runs" / agent.name
+        scratch_dir.mkdir(parents=True, exist_ok=True)
+        network = LEONetworkModel(
+            f"{args.network_name}-scoring-{agent.name}",
+            context,
+            leocraft_output=scratch_dir / "leocraft_starlink",
+        )
+        agent.act(network, payload)
+        evaluation = network.evaluate_performance_metrics()
+        if not evaluation:
+            return agent.evaluate(payload), {}
+        baseline_flat = flatten_performance_snapshot(evaluation.get("baseline", {}))
+        attacked_flat = flatten_performance_snapshot(evaluation.get("post_threat", {}))
+        score, perf_metrics = _score_from_performance(baseline_flat, attacked_flat)
+        return score, {
+            "evaluation": perf_metrics,
+            "baseline_flat": baseline_flat,
+            "attacked_flat": attacked_flat,
+            "seed": seed,
+        }
+
+    best_agent, best_payload, run_stats = manager.run(
+        context=context, score_callback=simulate_and_score
+    )
+    best_payload.setdefault("seed", seed)
     log_status(f"多智能体完成评分，选中代理: {best_agent.name}, 场景: {best_agent.scenario.name}")
 
     repo = ScenarioRepository(output_dir)
     scenario_path = repo.save(best_agent.scenario, best_payload)
     log_status(f"威胁场景JSON已保存: {scenario_path}")
+
+    # 从 multi-agent 生成的 JSON 文件中读取威胁场景，并构建威胁模型实例
+    try:
+        threat_configs = load_threat_json(scenario_path)
+    except ValueError as exc:
+        log_status(f"威胁配置解析失败，将跳过物理威胁模型注入: {exc}")
+        threat_configs = []
+    threat_models = build_threat_models(threat_configs) if threat_configs else []
+    if threat_models:
+        log_status(
+            f"已加载威胁模型 {len(threat_models)} 个: {[cfg['type'] for cfg in threat_configs]}"
+        )
+    else:
+        log_status("未加载额外威胁模型，继续执行默认脚本")
 
     codegen = ThreatCodegenAgent(output_dir / "generated_code")
     script_path, executor = codegen.build_script(best_agent.scenario, best_payload)
@@ -171,6 +380,39 @@ def main() -> None:
     log_status("初始化LEO网络模型完成，准备执行威胁脚本注入网络")
     executor(network)
     log_status("威胁脚本执行完毕，开始评估网络性能变化")
+
+    # === Threat model execution loop ===
+    sim_state = network  # sim_state encapsulates the constellation, metrics, and topology
+    verified_offline: Set[str] = set()
+    num_steps = int(best_payload.get("duration_steps") or best_payload.get("duration") or 1)
+    for t in range(num_steps):
+        # 1) 调用所有威胁模型，更新 sim_state（包含节点/链路）
+        for model in threat_models:
+            model.update(sim_state, t)
+
+        # 1.5) 在节点损毁后检查是否已从LEO网络中删除（runtime mask + graph）
+        offline_nodes = set()
+        try:
+            offline_nodes = set(str(n) for n in sim_state.runtime_state.get("offline_nodes", set()))
+        except Exception:
+            offline_nodes = set()
+
+        newly_offline = offline_nodes - verified_offline
+        for sat_id in sorted(newly_offline):
+            check = sim_state.verify_satellite_removal(sat_id)
+            log_status(
+                "卫星删除校验: {sid} -> {status} (mask={mask}, graph_missing={missing})".format(
+                    sid=sat_id,
+                    status="有效" if check.get("effective") else "未生效",
+                    mask=check.get("runtime_masked"),
+                    missing=check.get("graph_missing"),
+                )
+            )
+        verified_offline.update(newly_offline)
+
+        # 2) （可选）路由和性能计算，若可用则在每步刷新指标
+        if network.artifacts:
+            network.artifacts.recompute_performance()
     evaluation = network.evaluate_performance_metrics()
     network_path = output_dir / "network_timeline.json"
     network.save(network_path)
@@ -184,6 +426,10 @@ def main() -> None:
     baseline_result, attacked_result, attacked_graph, gs_nodes = _build_robustness_results(
         network, evaluation, baseline_flat, attacked_flat
     )
+    if not gs_nodes:
+        log_status("鲁棒性计算警告: 未识别到地面站节点，LCCR/APV等指标可能为0。")
+    if not baseline_result.get("pair_stats") or not attacked_result.get("pair_stats"):
+        log_status("鲁棒性计算警告: 缺少地面站对路径统计，使用轻量级最短路推断结果。")
     region_of_gs_mapping: Dict[str, str] = {}  # TODO: populate with real region mapping when available
     robustness_evaluator = RobustnessEvaluator(
         baseline_stats=baseline_result.get("pair_stats", {}),
