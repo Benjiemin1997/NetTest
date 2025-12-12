@@ -1,6 +1,7 @@
 """Scenario modeling cascading congestion and collapse of inter-satellite links."""
 from __future__ import annotations
 
+import random
 from typing import Dict
 
 from .base import LEONetwork, ScenarioContext, ThreatScenario
@@ -15,15 +16,16 @@ class NetworkCongestionScenario(ThreatScenario):
 
     def generate(self, context: ScenarioContext) -> Dict[str, object]:
         def fallback_payload() -> Dict[str, object]:
-            congested_links = max(1, context.inter_satellite_links // 5)
-            saturation = min(95, 60 + context.ground_stations * 2)
+            noise = random.uniform(0.15, 0.35)
+            congested_links = max(1, int(context.inter_satellite_links * noise))
+            saturation = min(95, 55 + random.random() * context.ground_stations * 3)
             return {
                 "congested_links": congested_links,
                 "description": (
                     "Malicious telemetry replay overloads {links} crosslinks leading to"
                     " cascading queue buildups and widespread packet loss."
                 ).format(links=congested_links),
-                "impact_duration_minutes": 45 + context.ground_stations,
+                "impact_duration_minutes": 40 + context.ground_stations + random.randint(0, 25),
                 "mitigation": (
                     "Throttle bulk transfers, enforce QoS preemption, and enable dynamic"
                     " congestion control overrides through SDN policies."
@@ -112,3 +114,4 @@ class NetworkCongestionScenario(ThreatScenario):
             "impact_duration_minutes": float(payload.get("impact_duration_minutes", 0)),
             "criticality": float(payload.get("criticality", 0)),
         }
+
