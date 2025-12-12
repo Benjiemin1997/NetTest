@@ -14,7 +14,11 @@ class MultiAgentManager:
     agents: Iterable[RiskAgent]
 
     def run(
-            self, context: ScenarioContext, *, score_callback=None
+            self,
+            context: ScenarioContext,
+            *,
+            score_callback=None,
+            **kwargs,
     ) -> Tuple[RiskAgent, Dict[str, object], Dict[str, object]]:
         scores: List[Tuple[float, RiskAgent, Dict[str, object]]] = []
         reports: List[Dict[str, object]] = []
