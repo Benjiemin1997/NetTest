@@ -3,8 +3,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Set, Tuple
 from datetime import datetime
+
+import networkx as nx
 
 from threat_scenarios.base import ScenarioContext
 
@@ -51,6 +53,14 @@ class LEONetworkModel:
     topology: Optional[object] = None
     leocraft_output: Optional[Path] = None
     artifacts: Optional[SimulationArtifacts] = None
+    runtime_state: Dict[str, object] = field(
+        default_factory=lambda: {
+            "offline_nodes": set(),
+            "offline_edges": set(),
+            "capacity_multipliers": {},
+        }
+    )
+    _baseline_graph: Optional[nx.Graph] = field(default=None, init=False, repr=False)
 
     def __post_init__(self) -> None:
         if self.topology is not None:
@@ -77,6 +87,8 @@ class LEONetworkModel:
                     "LEOCraft仿真数据已导出至: "
                     + str(self.artifacts.export_directory)
                 )
+            self._capture_baseline_graph()
+            self._apply_runtime_state()
         except LEOCraftIntegrationError as exc:
             self.log_event(
                 "LEOCraft未可用，回退到内置的最小网络模型: " + str(exc)
@@ -95,6 +107,112 @@ class LEONetworkModel:
         if graph is None:
             graph = getattr(constellation, "network_graph", None)
         return graph
+
+    # --- Runtime state overlay -------------------------------------------------
+    def _capture_baseline_graph(self) -> None:
+        """Store a copy of the initial LEOCraft graph for later masking."""
+
+        graph = self._leocraft_graph()
+        if isinstance(graph, nx.Graph):
+            self._baseline_graph = graph.copy()
+
+    def _apply_runtime_state(self) -> None:
+        """Apply runtime outage/congestion masks onto the LEOCraft graph."""
+
+        if not self.artifacts:
+            return
+
+        if self._baseline_graph is None:
+            self._capture_baseline_graph()
+        if self._baseline_graph is None:
+            return
+
+        offline_nodes: Set[str] = set(
+            str(node) for node in self.runtime_state.get("offline_nodes", set())
+        )
+        offline_edges: Set[Tuple[str, str]] = set()
+        for edge in self.runtime_state.get("offline_edges", set()):
+            if len(edge) != 2:
+                continue
+            offline_edges.add(tuple(sorted((str(edge[0]), str(edge[1])))))
+
+        working_graph: nx.Graph = self._baseline_graph.copy()
+        if offline_nodes:
+            working_graph.remove_nodes_from([node for node in offline_nodes if node in working_graph])
+        if offline_edges:
+            working_graph.remove_edges_from(
+                [edge for edge in offline_edges if working_graph.has_edge(*edge)]
+            )
+
+        constellation = getattr(self.artifacts, "constellation", None)
+        for attr in ("graph", "network_graph"):
+            if hasattr(constellation, attr):
+                try:
+                    setattr(constellation, attr, working_graph)
+                except Exception:
+                    continue
+
+        metrics = self.artifacts.metrics
+        metrics["offline_satellites"] = sorted(offline_nodes)
+        metrics["offline_satellite_count"] = len(offline_nodes)
+        metrics["congested_link_ids"] = [f"{u}->{v}" for u, v in sorted(offline_edges)]
+        metrics["congested_links"] = len(offline_edges)
+
+    def apply_runtime_state(self) -> None:
+        """Public wrapper so threat models can force mask application."""
+
+        self._apply_runtime_state()
+
+    def mark_satellite_status(self, sat_id: str, *, active: bool, reason: str = "") -> None:
+        """Update runtime mask for a specific satellite and its incident ISLs."""
+
+        offline_nodes: Set[str] = self.runtime_state.setdefault("offline_nodes", set())
+        offline_edges: Set[Tuple[str, str]] = self.runtime_state.setdefault("offline_edges", set())
+        sid = str(sat_id)
+
+        if active:
+            offline_nodes.discard(sid)
+            if self._baseline_graph is not None and sid in self._baseline_graph.nodes:
+                incident = [tuple(sorted(edge)) for edge in self._baseline_graph.edges(sid)]
+                for edge in incident:
+                    offline_edges.discard(edge)
+        else:
+            offline_nodes.add(sid)
+            if self._baseline_graph is not None and sid in self._baseline_graph.nodes:
+                incident = [tuple(sorted(edge)) for edge in self._baseline_graph.edges(sid)]
+                for edge in incident:
+                    offline_edges.add(edge)
+
+        self._apply_runtime_state()
+        if reason:
+            self.log_event(f"Runtime mask updated for {sid}: {'online' if active else 'offline'} ({reason})")
+
+    def verify_satellite_removal(self, sat_id: str) -> Dict[str, object]:
+        """Check whether a satellite has been dynamically removed from the LEO graph.
+
+        This uses both the runtime outage mask and LEOCraft's graph-level helpers to
+        confirm that a simulated failure is reflected in the underlying network
+        structures. The result dict can be used by threat models or tests to assert
+        that node deletions took effect.
+        """
+
+        sid = str(sat_id)
+        graph = self._leocraft_graph()
+        constellation = getattr(self.artifacts, "constellation", None) if self.artifacts else None
+
+        mask_offline = sid in self.runtime_state.get("offline_nodes", set())
+        graph_missing = graph is None or not graph.has_node(sid)
+
+        constellation_report = None
+        if constellation and hasattr(constellation, "check_satellite_removed"):
+            constellation_report = constellation.check_satellite_removed(sid)
+
+        return {
+            "runtime_masked": mask_offline,
+            "graph_missing": graph_missing,
+            "constellation_report": constellation_report,
+            "effective": mask_offline or graph_missing or bool(constellation_report and constellation_report.get("removed")),
+        }
 
     def _append_no_path_records(
         self, offline_nodes: List[str], *, reason: str
@@ -119,53 +237,41 @@ class LEONetworkModel:
         return path
 
     def disable_satellites(self, count: int, *, reason: str) -> Dict[str, object]:
-        """Remove satellites from the constellation graph to mimic hard failures."""
+        """Mask satellites as offline without rebuilding the LEOCraft graph."""
 
         if count <= 0:
             return {"removed": 0, "offline_nodes": []}
 
         offline_nodes: List[str] = []
         removed = 0
-        graph = self._leocraft_graph()
-        if graph is not None and hasattr(graph, "nodes"):
-            try:
-                nodes = list(graph.nodes)  # type: ignore[attr-defined]
-                nodes = sorted(nodes, key=lambda node: str(node))
-                target = nodes[:count]
-                if target:
-                    removed = len(target)
-                    offline_nodes = [str(node) for node in target]
-                    if hasattr(graph, "remove_nodes_from"):
-                        graph.remove_nodes_from(target)  # type: ignore[attr-defined]
-                    else:
-                        for node in target:
-                            graph.remove_node(node)  # type: ignore[attr-defined]
-            except Exception as exc:  # pragma: no cover - best effort when LEOCraft present
-                self.log_event(
-                    "无法直接从LEOCraft网络图中删除卫星节点: " + str(exc)
-                )
-                removed = 0
-                offline_nodes = []
+        offline_mask: Set[str] = self.runtime_state.setdefault("offline_nodes", set())
+        offline_edges: Set[Tuple[str, str]] = self.runtime_state.setdefault("offline_edges", set())
+        baseline_nodes: List[str] = []
+        if self._baseline_graph is not None:
+            baseline_nodes = [str(node) for node in sorted(self._baseline_graph.nodes)]
+        target_pool = [node for node in baseline_nodes if node not in offline_mask]
+        target = target_pool[:count]
+        if not target and baseline_nodes:
+            target = baseline_nodes[:count]
 
-        if removed == 0:
-            baseline = int(
-                self.artifacts.summary.get("satellites", self.context.satellite_count)
-            ) if self.artifacts else self.context.satellite_count
-            removed = min(count, baseline)
-            offline_nodes = [f"SAT-{index:04d}" for index in range(1, removed + 1)]
+        if target:
+            offline_nodes = [str(node) for node in target]
+            removed = len(offline_nodes)
+            offline_mask.update(offline_nodes)
+            if self._baseline_graph is not None:
+                for node in offline_nodes:
+                    incident = [tuple(sorted(edge)) for edge in self._baseline_graph.edges(node)]
+                    offline_edges.update(incident)
 
         if self.artifacts:
             summary = self.artifacts.summary
             baseline_total = int(summary.get("satellites", self.context.satellite_count))
-            summary["satellites"] = max(0, baseline_total - removed)
             summary["satellites_offline"] = summary.get("satellites_offline", 0) + removed
             outage_pct = round((removed / max(1, baseline_total)) * 100, 2)
             metrics = self.artifacts.metrics
             metrics["estimated_satellite_outage_pct"] = outage_pct
-            metrics["offline_satellites"] = offline_nodes
 
-        self.context.satellite_count = max(0, self.context.satellite_count - removed)
-
+        self._apply_runtime_state()
         exported = self._append_no_path_records(offline_nodes, reason=reason)
 
         return {
@@ -175,40 +281,33 @@ class LEONetworkModel:
         }
 
     def congest_links(self, count: int, *, reason: str) -> Dict[str, object]:
-        """Remove edges from the constellation graph to mimic congestion collapse."""
+        """Mask specific ISLs as down to emulate congestion collapse."""
 
         if count <= 0:
             return {"links_removed": 0, "links": []}
 
         affected_edges: List[str] = []
         removed = 0
-        graph = self._leocraft_graph()
-        if graph is not None and hasattr(graph, "edges"):
-            try:
-                edges = list(graph.edges)  # type: ignore[attr-defined]
-                edges = sorted(edges, key=lambda edge: (str(edge[0]), str(edge[1])))
-                target = edges[:count]
-                if target:
-                    removed = len(target)
-                    affected_edges = [f"{edge[0]}->{edge[1]}" for edge in target]
-                    if hasattr(graph, "remove_edges_from"):
-                        graph.remove_edges_from(target)  # type: ignore[attr-defined]
-                    else:
-                        for edge in target:
-                            graph.remove_edge(*edge)  # type: ignore[attr-defined]
-            except Exception as exc:  # pragma: no cover - depends on LEOCraft internals
-                self.log_event("无法在LEOCraft图中移除链路: " + str(exc))
-                removed = 0
-                affected_edges = []
+        offline_edges: Set[Tuple[str, str]] = self.runtime_state.setdefault("offline_edges", set())
+        baseline_edges: List[Tuple[str, str]] = []
+        if self._baseline_graph is not None:
+            baseline_edges = [tuple(sorted(edge)) for edge in sorted(self._baseline_graph.edges)]
+        target_pool = [edge for edge in baseline_edges if edge not in offline_edges]
+        target = target_pool[:count]
+        if not target and baseline_edges:
+            target = baseline_edges[:count]
 
-        if removed == 0:
-            removed = count
-            affected_edges = [f"LINK-{index:04d}" for index in range(1, count + 1)]
+        if target:
+            removed = len(target)
+            offline_edges.update(target)
+            affected_edges = [f"{edge[0]}->{edge[1]}" for edge in target]
 
         if self.artifacts:
             metrics = self.artifacts.metrics
             metrics["congested_links"] = metrics.get("congested_links", 0) + removed
             metrics["congested_link_ids"] = affected_edges
+
+        self._apply_runtime_state()
 
         exported = None
         if self.artifacts and self.artifacts.export_directory is not None:
@@ -286,6 +385,10 @@ class LEONetworkModel:
             self.log_event("LEOCraft性能评估已跳过：当前使用内置最小网络模型。")
             return None
 
+        # Ensure the runtime outage/congestion mask is reflected in the LEOCraft graph
+        # before recomputing metrics so threat impacts surface in performance results.
+        self._apply_runtime_state()
+
         baseline = self.artifacts.performance_baseline
         post = self.artifacts.recompute_performance()
         delta = compute_metric_delta(baseline, post)
@@ -316,6 +419,14 @@ class LEONetworkModel:
                 {"event": entry.event, "impact": entry.impact} for entry in self.log
             ],
             "leocraft": self.artifacts.to_dict() if self.artifacts else None,
+            "runtime_state": {
+                "offline_nodes": sorted(
+                    str(node) for node in self.runtime_state.get("offline_nodes", set())
+                ),
+                "offline_edges": [
+                    [str(edge[0]), str(edge[1])] for edge in self.runtime_state.get("offline_edges", set())
+                ],
+            },
         }
 
     def save(self, path: Path) -> None:
