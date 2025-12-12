@@ -16,7 +16,6 @@ class MultiAgentManager:
     def run(
             self,
             context: ScenarioContext,
-            *_,
             score_callback: Optional[
                 Callable[[RiskAgent, Dict[str, object]], Tuple[float, Dict[str, object]]]
             ] = None,
@@ -24,12 +23,16 @@ class MultiAgentManager:
     ) -> Tuple[RiskAgent, Dict[str, object], Dict[str, object]]:
         scores: List[Tuple[float, RiskAgent, Dict[str, object]]] = []
         reports: List[Dict[str, object]] = []
-        # Swallow any unexpected keyword arguments for backward compatibility so
-        # callers can pass callback-style scoring without raising errors.
+        # Gracefully swallow unexpected keyword arguments for backward
+        # compatibility so caller signatures can evolve without breaking.
         if kwargs:
-            print(
-                f"[STATUS] MultiAgentManager.run() 收到额外参数 {list(kwargs.keys())}，已忽略"
-            )
+            # Explicitly allow callers to pass score_callback either as a
+            # positional named argument or inside kwargs to mirror older APIs.
+            score_callback = kwargs.pop("score_callback", score_callback)
+            if kwargs:
+                print(
+                    f"[STATUS] MultiAgentManager.run() 收到额外参数 {list(kwargs.keys())}，已忽略"
+                )
         for agent in self.agents:
             print(f"[STATUS] 开始执行代理: {agent.name}，场景: {agent.scenario.name}")
             payload = agent.perceive(context)
