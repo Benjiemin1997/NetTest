@@ -13,8 +13,11 @@ from itertools import combinations
 import networkx as nx
 import pandas as pd
 PROJECT_ROOT = Path(__file__).resolve().parent
+REPO_ROOT = PROJECT_ROOT.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
 from agents.codegen_agent import ThreatCodegenAgent
 from agents.congestion_agent import CongestionCollapseAgent
@@ -22,6 +25,7 @@ from agents.evaluators import SimpleImpactEvaluator
 from agents.protocol_agent import ProtocolAttackAgent
 from agents.satellite_agent import SatelliteDamageAgent
 from llm_client import LLMScenarioGenerator
+from Threat_Define.simulation.multi_agent_manager import MultiAgentManager
 from simulation.solar_storm_model import SolarStormNodeOutageModel
 from simulation.environment import LEONetworkModel
 from simulation.evaluation import (
@@ -33,9 +37,23 @@ from simulation.evaluation import (
 )
 from simulation.leocraft_starlink import flatten_performance_snapshot
 from simulation.robustness_metrics import PairStats, RobustnessEvaluator
-from simulation.multi_agent_manager import MultiAgentManager
 from simulation.scenario_repository import ScenarioRepository
 from threat_scenarios.base import ScenarioContext
+
+# Ensure we are importing the MultiAgentManager implementation that supports
+# score_callback to avoid regressions if another module named "simulation"
+# shadows the intended package.
+assert (
+    "score_callback" in MultiAgentManager.run.__code__.co_varnames
+), "Imported MultiAgentManager.run does not accept score_callback; check Threat_Define.simulation import path."
+
+
+# Registry of supported threat models so they can be constructed from JSON configs.
+THREAT_REGISTRY = {
+    "solar_storm_node_outage": SolarStormNodeOutageModel,
+    # "congestion_attack": CongestionModel,
+    # "protocol_attack": ProtocolAttackModel,
+}
 
 
 # Registry of supported threat models so they can be constructed from JSON configs.
@@ -334,7 +352,9 @@ def main() -> None:
             "seed": seed,
         }
 
-    best_agent, best_payload, run_stats = manager.run(context, score_callback=simulate_and_score)
+    best_agent, best_payload, run_stats = manager.run(
+        context=context, score_callback=simulate_and_score
+    )
     best_payload.setdefault("seed", seed)
     log_status(f"多智能体完成评分，选中代理: {best_agent.name}, 场景: {best_agent.scenario.name}")
 
