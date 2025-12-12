@@ -6,6 +6,7 @@ from pathlib import Path
 import sys
 
 from typing import Dict, Optional, Set, Tuple
+from itertools import combinations
 
 import networkx as nx
 import pandas as pd
@@ -29,7 +30,7 @@ from simulation.evaluation import (
     summarize_delta,
 )
 from simulation.leocraft_starlink import flatten_performance_snapshot
-from simulation.robustness_metrics import RobustnessEvaluator
+from simulation.robustness_metrics import PairStats, RobustnessEvaluator
 from simulation.multi_agent_manager import MultiAgentManager
 from simulation.scenario_repository import ScenarioRepository
 from threat_scenarios.base import ScenarioContext
@@ -151,6 +152,38 @@ def _collect_attack_nodes(network: LEONetworkModel) -> Set[str]:
     return set()
 
 
+def _compute_pair_stats(graph: Optional[nx.Graph], gs_nodes: Set[str]) -> Dict[Tuple[str, str], PairStats]:
+    """Lightweight reachability and path stats for GS pairs to avoid empty metrics.
+
+    When LEOCraft does not surface per-pair measurements, we derive basic
+    connectivity/latency using the current graph so robustness metrics (SRR/DPR/SI/HI)
+    have meaningful inputs instead of defaulting to zeros.
+    """
+
+    if graph is None or not gs_nodes:
+        return {}
+
+    stats: Dict[Tuple[str, str], PairStats] = {}
+    for src, dst in combinations(sorted(gs_nodes), 2):
+        reachable = False
+        latency = 0.0
+        hops = 0
+        stretch = 0.0
+        try:
+            path = nx.shortest_path(graph, source=src, target=dst, weight="weight")
+            reachable = True
+            hops = max(0, len(path) - 1)
+            try:
+                latency = float(nx.shortest_path_length(graph, source=src, target=dst, weight="weight"))
+            except Exception:
+                latency = float(hops)
+            stretch = latency
+        except (nx.NetworkXNoPath, nx.NodeNotFound):
+            reachable = False
+        stats[(src, dst)] = PairStats(reachable=reachable, latency=latency, stretch=stretch, hops=hops)
+    return stats
+
+
 def _build_robustness_results(
         network: LEONetworkModel,
         evaluation: Optional[Dict[str, object]],
@@ -165,8 +198,12 @@ def _build_robustness_results(
     baseline_snapshot = evaluation.get("baseline", {}) if evaluation else {}
     attacked_snapshot = evaluation.get("post_threat", {}) if evaluation else {}
 
+    baseline_graph = getattr(network, "_baseline_graph", None)
+    baseline_stats = _compute_pair_stats(baseline_graph if isinstance(baseline_graph, nx.Graph) else attacked_graph, gs_nodes)
+    attacked_stats = _compute_pair_stats(attacked_graph, gs_nodes)
+
     baseline_result: Dict[str, object] = {
-        "pair_stats": {},
+        "pair_stats": baseline_stats,
         "coverage": {},
         "total_throughput": _extract_total_throughput(baseline_flat),
         "throughput_by_gs": {},
@@ -174,7 +211,7 @@ def _build_robustness_results(
         "gs_nodes": gs_nodes,
     }
     attacked_result: Dict[str, object] = {
-        "pair_stats": {},
+        "pair_stats": attacked_stats,
         "coverage": {},
         "total_throughput": _extract_total_throughput(attacked_flat),
         "throughput_by_gs": {},
@@ -283,6 +320,10 @@ def main() -> None:
     baseline_result, attacked_result, attacked_graph, gs_nodes = _build_robustness_results(
         network, evaluation, baseline_flat, attacked_flat
     )
+    if not gs_nodes:
+        log_status("鲁棒性计算警告: 未识别到地面站节点，LCCR/APV等指标可能为0。")
+    if not baseline_result.get("pair_stats") or not attacked_result.get("pair_stats"):
+        log_status("鲁棒性计算警告: 缺少地面站对路径统计，使用轻量级最短路推断结果。")
     region_of_gs_mapping: Dict[str, str] = {}  # TODO: populate with real region mapping when available
     robustness_evaluator = RobustnessEvaluator(
         baseline_stats=baseline_result.get("pair_stats", {}),
