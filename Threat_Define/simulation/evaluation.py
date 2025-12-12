@@ -12,11 +12,13 @@ from .leocraft_starlink import flatten_performance_snapshot
 
 
 
-def _aggregate_metric(flat_snapshot: Dict[str, float] | None, keyword: str) -> float:
+def _aggregate_metric(flat_snapshot: Dict[str, float] | None, keyword: str, *, mode: str = "mean") -> float:
     values = [value for key, value in (flat_snapshot or {}).items() if keyword in key.lower()]
 
     if not values:
         return 0.0
+    if mode == "sum":
+        return float(sum(values))
     return float(mean(values))
 
 
@@ -79,10 +81,12 @@ def compute_performance_metrics(
     baseline_flat = baseline_flat or flatten_performance_snapshot(baseline_snapshot or {})
     post_flat = post_flat or flatten_performance_snapshot(post_snapshot)
     return {
-        "throughput_baseline": _aggregate_metric(baseline_flat, "throughput"),
+        # Use sums for throughput to align with network_timeline totals; other metrics
+        # remain averaged to avoid double-counting coverage entries.
+        "throughput_baseline": _aggregate_metric(baseline_flat, "throughput", mode="sum"),
         "coverage_baseline": _aggregate_metric(baseline_flat, "coverage"),
         "stretch_baseline": _aggregate_metric(baseline_flat, "stretch"),
-        "throughput_post": _aggregate_metric(post_flat, "throughput"),
+        "throughput_post": _aggregate_metric(post_flat, "throughput", mode="sum"),
         "coverage_post": _aggregate_metric(post_flat, "coverage"),
         "stretch_post": _aggregate_metric(post_flat, "stretch"),
     }

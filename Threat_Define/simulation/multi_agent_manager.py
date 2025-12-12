@@ -14,7 +14,7 @@ class MultiAgentManager:
     agents: Iterable[RiskAgent]
 
     def run(
-            self, context: ScenarioContext
+            self, context: ScenarioContext, *, score_callback=None
     ) -> Tuple[RiskAgent, Dict[str, object], Dict[str, object]]:
         scores: List[Tuple[float, RiskAgent, Dict[str, object]]] = []
         reports: List[Dict[str, object]] = []
@@ -22,7 +22,16 @@ class MultiAgentManager:
             print(f"[STATUS] 开始执行代理: {agent.name}，场景: {agent.scenario.name}")
             payload = agent.perceive(context)
             print(f"[STATUS] 代理 {agent.name} 完成场景生成，开始评分")
-            score = agent.evaluate(payload)
+            score_details: Dict[str, object] = {}
+            if score_callback:
+                try:
+                    score, score_details = score_callback(agent, payload)
+                except Exception as exc:
+                    print(f"[STATUS] 代理 {agent.name} 闭环评分失败，回退启发式: {exc}")
+                    score = agent.evaluate(payload)
+            else:
+                score = agent.evaluate(payload)
+            payload["score_details"] = score_details
             print(f"[STATUS] 代理 {agent.name} 评分完成，得分: {score:.3f}")
             scores.append((score, agent, payload))
             reports.append(
