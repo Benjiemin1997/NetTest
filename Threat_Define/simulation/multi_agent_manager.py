@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, Iterable, List, Tuple
+from typing import Callable, Dict, Iterable, List, Optional, Tuple
 
 from Threat_Define.agents import RiskAgent
 from Threat_Define.threat_scenarios import ScenarioContext
@@ -16,12 +16,20 @@ class MultiAgentManager:
     def run(
             self,
             context: ScenarioContext,
-            *,
-            score_callback=None,
+            *_,
+            score_callback: Optional[
+                Callable[[RiskAgent, Dict[str, object]], Tuple[float, Dict[str, object]]]
+            ] = None,
             **kwargs,
     ) -> Tuple[RiskAgent, Dict[str, object], Dict[str, object]]:
         scores: List[Tuple[float, RiskAgent, Dict[str, object]]] = []
         reports: List[Dict[str, object]] = []
+        # Swallow any unexpected keyword arguments for backward compatibility so
+        # callers can pass callback-style scoring without raising errors.
+        if kwargs:
+            print(
+                f"[STATUS] MultiAgentManager.run() 收到额外参数 {list(kwargs.keys())}，已忽略"
+            )
         for agent in self.agents:
             print(f"[STATUS] 开始执行代理: {agent.name}，场景: {agent.scenario.name}")
             payload = agent.perceive(context)
