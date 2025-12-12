@@ -11,6 +11,13 @@ class SimpleImpactEvaluator:
 
     def score(self, scenario: ThreatScenario, payload: Dict[str, object]) -> float:
         score = 1.0
+        details = payload.get("score_details") if isinstance(payload.get("score_details"), dict) else {}
+        perf = details.get("evaluation") if isinstance(details, dict) else None
+        if isinstance(perf, dict):
+            throughput_loss = float(perf.get("throughput_loss", 0.0))
+            coverage_loss = float(perf.get("coverage_loss", 0.0))
+            stretch_increase = float(perf.get("stretch_increase", 0.0))
+            score += throughput_loss * 0.3 + coverage_loss * 50.0 + stretch_increase * 5.0
         if "damaged_nodes" in payload:
             score += payload["damaged_nodes"] * 1.5
         if "congested_links" in payload:

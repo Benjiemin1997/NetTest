@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, Iterable, List, Tuple
+from typing import Callable, Dict, Iterable, List, Optional, Tuple
 
 from Threat_Define.agents import RiskAgent
 from Threat_Define.threat_scenarios import ScenarioContext
@@ -14,15 +14,36 @@ class MultiAgentManager:
     agents: Iterable[RiskAgent]
 
     def run(
-            self, context: ScenarioContext
+            self,
+            context: ScenarioContext,
+            *_,
+            score_callback: Optional[
+                Callable[[RiskAgent, Dict[str, object]], Tuple[float, Dict[str, object]]]
+            ] = None,
+            **kwargs,
     ) -> Tuple[RiskAgent, Dict[str, object], Dict[str, object]]:
         scores: List[Tuple[float, RiskAgent, Dict[str, object]]] = []
         reports: List[Dict[str, object]] = []
+        # Swallow any unexpected keyword arguments for backward compatibility so
+        # callers can pass callback-style scoring without raising errors.
+        if kwargs:
+            print(
+                f"[STATUS] MultiAgentManager.run() 收到额外参数 {list(kwargs.keys())}，已忽略"
+            )
         for agent in self.agents:
             print(f"[STATUS] 开始执行代理: {agent.name}，场景: {agent.scenario.name}")
             payload = agent.perceive(context)
             print(f"[STATUS] 代理 {agent.name} 完成场景生成，开始评分")
-            score = agent.evaluate(payload)
+            score_details: Dict[str, object] = {}
+            if score_callback:
+                try:
+                    score, score_details = score_callback(agent, payload)
+                except Exception as exc:
+                    print(f"[STATUS] 代理 {agent.name} 闭环评分失败，回退启发式: {exc}")
+                    score = agent.evaluate(payload)
+            else:
+                score = agent.evaluate(payload)
+            payload["score_details"] = score_details
             print(f"[STATUS] 代理 {agent.name} 评分完成，得分: {score:.3f}")
             scores.append((score, agent, payload))
             reports.append(
