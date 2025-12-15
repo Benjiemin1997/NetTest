@@ -10,6 +10,7 @@ import time
 from itertools import combinations
 from pathlib import Path
 from typing import Dict, Optional, Set, Tuple
+from itertools import combinations
 
 import networkx as nx
 import pandas as pd
