@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import random
 from typing import Dict
 
 from .base import LEONetwork, ScenarioContext, ThreatScenario
@@ -13,8 +14,9 @@ class SatelliteNodeFailureScenario(ThreatScenario):
 
     def generate(self, context: ScenarioContext) -> Dict[str, object]:
         def fallback_payload() -> Dict[str, object]:
-            damaged_nodes = max(1, context.satellite_count // 12)
-            impact_minutes = max(30, context.inter_satellite_links // 4)
+            loss_ratio = random.uniform(0.05, 0.2)
+            damaged_nodes = max(1, int(context.satellite_count * loss_ratio))
+            impact_minutes = max(30, context.inter_satellite_links // 4 + random.randint(0, 30))
             return {
                 "damaged_nodes": damaged_nodes,
                 "affected_services": context.critical_services[:2],

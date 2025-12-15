@@ -214,6 +214,71 @@ class Constellation(ABC):
         for sid in range(len(shell.satellites)):
             self.sat_net_graph.add_node(shell.encode_sat_name(sid))
 
+    def remove_satellite_node(self, sat_name: str, *, prune_gsls: bool = True) -> bool:
+        """Dynamically remove a satellite node and its incident links from the graph.
+
+        This is the inverse of :meth:`_add_satellites_from_shell` and can be used by
+        threat models to simulate node outages without rebuilding the entire network
+        topology. The removal is performed on ``sat_net_graph`` and optional GSL
+        bookkeeping structures so downstream routing/performance calls see the change.
+
+        Returns ``True`` if the node was present and removed, ``False`` otherwise.
+        """
+
+        graph = getattr(self, "sat_net_graph", None)
+        if graph is None:
+            return False
+
+        removed = False
+        if graph.has_node(sat_name):
+            graph.remove_node(sat_name)
+            removed = True
+
+        if prune_gsls and hasattr(self, "gsls"):
+            for gid, gsl_set in enumerate(self.gsls):
+                if gsl_set is None:
+                    continue
+                filtered = {(name, dist) for name, dist in gsl_set if name != sat_name}
+                if len(filtered) != len(gsl_set):
+                    self.gsls[gid] = filtered
+
+        if prune_gsls and hasattr(self, "sat_coverage"):
+            self.sat_coverage.pop(sat_name, None)
+
+        return removed
+
+    def check_satellite_removed(self, sat_name: str) -> dict[str, object]:
+        """Verify whether a satellite node has been removed from the network graph.
+
+        Returns a structured dict capturing whether the node still exists in
+        ``sat_net_graph`` and whether any residual GSL bookkeeping remains. This
+        allows callers to assert that an injected outage really modified the
+        underlying graph and related metadata.
+        """
+
+        graph = getattr(self, "sat_net_graph", None)
+        node_present = graph is not None and graph.has_node(sat_name)
+        incident_edges = 0 if graph is None or not node_present else graph.degree(sat_name)
+
+        gsl_reference = False
+        if hasattr(self, "gsls"):
+            for gsl_set in self.gsls:
+                if gsl_set and any(name == sat_name for name, _ in gsl_set):
+                    gsl_reference = True
+                    break
+
+        coverage_reference = hasattr(self, "sat_coverage") and sat_name in getattr(
+            self, "sat_coverage", {}
+        )
+
+        return {
+            "node_present": node_present,
+            "incident_edges": incident_edges,
+            "gsls_ref": gsl_reference,
+            "coverage_ref": coverage_reference,
+            "removed": (not node_present) and (not gsl_reference) and (not coverage_reference),
+        }
+
     def _add_ISLs_from_shell(self, shell: LEOSatelliteTopology) -> None:
         for sid_a, sid_b in (shell.isls):
             distance_m, in_ISL_range = shell.distance_between_sat_m(
