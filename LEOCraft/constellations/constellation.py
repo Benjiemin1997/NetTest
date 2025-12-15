@@ -214,6 +214,171 @@ class Constellation(ABC):
         for sid in range(len(shell.satellites)):
             self.sat_net_graph.add_node(shell.encode_sat_name(sid))
 
+    # ---------- Runtime satellite + ISL helpers (CRUD & geometry) ----------
+    def _get_shell(self, shell_id: int) -> LEOSatelliteTopology:
+        """Return shell by ID or raise a clear error."""
+        for shell in self.shells:
+            if shell.id == shell_id:
+                return shell
+        raise KeyError(f"Shell {shell_id} not found in constellation {self.name}")
+
+    def satellite_geodetic(
+        self, sat_name: str, time_delta: TimeDelta | None = None
+    ) -> SatelliteInfo:
+        """Return geodetic (lat/lon/alt) plus metadata for a named satellite."""
+
+        shell_id, sid = LEOSatelliteTopology.decode_sat_name(sat_name)
+        shell = self._get_shell(shell_id)
+        return shell.build_sat_info(sid, time_delta or TimeDelta(0.0 * u.nanosecond))
+
+    def satellite_cartesian(
+        self, sat_name: str, time_delta: TimeDelta | None = None
+    ) -> tuple[float, float, float]:
+        """Return ECEF cartesian coordinates (x, y, z) for a named satellite."""
+
+        shell_id, sid = LEOSatelliteTopology.decode_sat_name(sat_name)
+        shell = self._get_shell(shell_id)
+        return shell.cartesian_coordinates_of_sat(
+            sid, time_delta or TimeDelta(0.0 * u.nanosecond)
+        )
+
+    def list_sat_isls(self, sat_name: str) -> list[str]:
+        """List ISL neighbours for a satellite node from the network graph."""
+
+        graph = getattr(self, "sat_net_graph", None)
+        if graph is None or not graph.has_node(sat_name):
+            return []
+        return [nbr for nbr in graph.neighbors(sat_name) if graph.has_edge(sat_name, nbr)]
+
+    def add_isl(self, sat_a: str, sat_b: str, capacity: float | None = None) -> bool:
+        """Add (or restore) an ISL edge with distance weight and capacity.
+
+        Returns ``True`` if the edge was added/updated, ``False`` if nodes were
+        missing.
+        """
+
+        graph = getattr(self, "sat_net_graph", None)
+        if graph is None or not (graph.has_node(sat_a) and graph.has_node(sat_b)):
+            return False
+
+        # Compute distance using shell geometry to remain consistent with build() logic
+        shell_a, sid_a = LEOSatelliteTopology.decode_sat_name(sat_a)
+        shell_b, sid_b = LEOSatelliteTopology.decode_sat_name(sat_b)
+        shell_obj_a = self._get_shell(shell_a)
+        shell_obj_b = self._get_shell(shell_b)
+
+        if shell_obj_a is not shell_obj_b:
+            # Cross-shell ISL: compute cartesian distance across shells
+            ax, ay, az = shell_obj_a.cartesian_coordinates_of_sat(sid_a, self.time_delta)
+            bx, by, bz = shell_obj_b.cartesian_coordinates_of_sat(sid_b, self.time_delta)
+            distance_m = ((ax - bx) ** 2 + (ay - by) ** 2 + (az - bz) ** 2) ** 0.5
+        else:
+            distance_m, _ = shell_obj_a.distance_between_sat_m(
+                sid_a, sid_b, self.time_delta
+            )
+
+        graph.add_edge(
+            sat_a,
+            sat_b,
+            weight=distance_m,
+            capacity=self.ISL_CAPACITY if capacity is None else capacity,
+        )
+        return True
+
+    def remove_isl(self, sat_a: str, sat_b: str) -> bool:
+        """Remove an ISL edge if present; returns True when an edge was removed."""
+
+        graph = getattr(self, "sat_net_graph", None)
+        if graph is None or not graph.has_edge(sat_a, sat_b):
+            return False
+        graph.remove_edge(sat_a, sat_b)
+        return True
+
+    def set_isl_state(self, sat_a: str, sat_b: str, online: bool) -> bool:
+        """Convenience wrapper to disable (remove) or enable (add) an ISL edge."""
+
+        if online:
+            return self.add_isl(sat_a, sat_b)
+        return self.remove_isl(sat_a, sat_b)
+
+    def get_isl_attributes(self, sat_a: str, sat_b: str) -> dict[str, object] | None:
+        """Inspect ISL attributes (weight/capacity) from the network graph."""
+
+        graph = getattr(self, "sat_net_graph", None)
+        if graph is None or not graph.has_edge(sat_a, sat_b):
+            return None
+        return dict(graph[sat_a][sat_b])
+
+    def build_routing_tables(self, k: int | None = None) -> None:
+        """(Re)generate routing tables via the configured k-shortest path routine."""
+
+        self.generate_routes(k=k or self.k)
+
+    def remove_satellite_node(self, sat_name: str, *, prune_gsls: bool = True) -> bool:
+        """Dynamically remove a satellite node and its incident links from the graph.
+
+        This is the inverse of :meth:`_add_satellites_from_shell` and can be used by
+        threat models to simulate node outages without rebuilding the entire network
+        topology. The removal is performed on ``sat_net_graph`` and optional GSL
+        bookkeeping structures so downstream routing/performance calls see the change.
+
+        Returns ``True`` if the node was present and removed, ``False`` otherwise.
+        """
+
+        graph = getattr(self, "sat_net_graph", None)
+        if graph is None:
+            return False
+
+        removed = False
+        if graph.has_node(sat_name):
+            graph.remove_node(sat_name)
+            removed = True
+
+        if prune_gsls and hasattr(self, "gsls"):
+            for gid, gsl_set in enumerate(self.gsls):
+                if gsl_set is None:
+                    continue
+                filtered = {(name, dist) for name, dist in gsl_set if name != sat_name}
+                if len(filtered) != len(gsl_set):
+                    self.gsls[gid] = filtered
+
+        if prune_gsls and hasattr(self, "sat_coverage"):
+            self.sat_coverage.pop(sat_name, None)
+
+        return removed
+
+    def check_satellite_removed(self, sat_name: str) -> dict[str, object]:
+        """Verify whether a satellite node has been removed from the network graph.
+
+        Returns a structured dict capturing whether the node still exists in
+        ``sat_net_graph`` and whether any residual GSL bookkeeping remains. This
+        allows callers to assert that an injected outage really modified the
+        underlying graph and related metadata.
+        """
+
+        graph = getattr(self, "sat_net_graph", None)
+        node_present = graph is not None and graph.has_node(sat_name)
+        incident_edges = 0 if graph is None or not node_present else graph.degree(sat_name)
+
+        gsl_reference = False
+        if hasattr(self, "gsls"):
+            for gsl_set in self.gsls:
+                if gsl_set and any(name == sat_name for name, _ in gsl_set):
+                    gsl_reference = True
+                    break
+
+        coverage_reference = hasattr(self, "sat_coverage") and sat_name in getattr(
+            self, "sat_coverage", {}
+        )
+
+        return {
+            "node_present": node_present,
+            "incident_edges": incident_edges,
+            "gsls_ref": gsl_reference,
+            "coverage_ref": coverage_reference,
+            "removed": (not node_present) and (not gsl_reference) and (not coverage_reference),
+        }
+
     def _add_ISLs_from_shell(self, shell: LEOSatelliteTopology) -> None:
         for sid_a, sid_b in (shell.isls):
             distance_m, in_ISL_range = shell.distance_between_sat_m(
