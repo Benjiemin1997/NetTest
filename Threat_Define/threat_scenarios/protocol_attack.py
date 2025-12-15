@@ -1,6 +1,7 @@
 """Scenario describing an adversary targeting protocol layers of the LEO network."""
 from __future__ import annotations
 
+import random
 from typing import Dict
 
 from .base import LEONetwork, ScenarioContext, ThreatScenario
@@ -14,7 +15,7 @@ class ProtocolAttackScenario(ThreatScenario):
 
     def generate(self, context: ScenarioContext) -> Dict[str, object]:
         def fallback_payload() -> Dict[str, object]:
-            exploited_nodes = min(6, max(2, context.satellite_count // 15))
+            exploited_nodes = min(6, max(2, int(context.satellite_count * random.uniform(0.05, 0.15))))
             return {
                 "attack_vector": "Malformed handover negotiation packets",
                 "target_protocol": "LEO Inter-satellite Routing Protocol (LIRP)",
@@ -23,7 +24,7 @@ class ProtocolAttackScenario(ThreatScenario):
                     " forcing repeated failovers and watchdog resets across constellation nodes."
                 ),
                 "exploited_nodes": exploited_nodes,
-                "impact_duration_minutes": 60,
+                "impact_duration_minutes": 45 + random.randint(0, 30),
                 "steps": [
                     "Harvest firmware images from development uplink for protocol insights.",
                     "Craft poisoned handover frames targeting roaming satellites.",
