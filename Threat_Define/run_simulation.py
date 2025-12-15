@@ -232,6 +232,35 @@ def _compute_pair_stats(graph: Optional[nx.Graph], gs_nodes: Set[str]) -> Dict[T
     return stats
 
 
+def _invoke_manager_run(manager, context, score_callback):
+    """Invoke manager.run with maximum compatibility safeguards.
+
+    Older deployments may still expose a ``run`` signature that lacks
+    ``score_callback``; in that case we transparently fall back to heuristic
+    scoring without aborting the pipeline.
+    """
+
+    run_sig = inspect.signature(manager.run)
+    run_params = run_sig.parameters
+    run_kwargs = {"context": context}
+    supports_callback = "score_callback" in run_params or any(
+        p.kind == inspect.Parameter.VAR_KEYWORD for p in run_params.values()
+    )
+    if supports_callback and score_callback is not None:
+        run_kwargs["score_callback"] = score_callback
+    else:
+        if not supports_callback:
+            log_status("MultiAgentManager.run 不支持 score_callback，使用启发式评分")
+
+    try:
+        return manager.run(**run_kwargs)
+    except TypeError as exc:
+        log_status(f"MultiAgentManager.run 调用失败，回退无 score_callback: {exc}")
+        # Remove the callback and retry with the minimal signature to avoid
+        # unexpected keyword errors from legacy implementations.
+        return manager.run(context=context)
+
+
 def _extract_metric(flat_snapshot: Optional[Dict[str, float]], keyword: str) -> float:
     if not flat_snapshot:
         return 0.0
@@ -374,25 +403,9 @@ def main() -> None:
             "seed": seed,
         }
 
-    run_sig = inspect.signature(manager.run)
-    run_params = run_sig.parameters
-    run_kwargs = {"context": context}
-    supports_callback = "score_callback" in run_params or any(
-        p.kind == inspect.Parameter.VAR_KEYWORD for p in run_params.values()
+    best_agent, best_payload, run_stats = _invoke_manager_run(
+        manager, context, simulate_and_score
     )
-    if supports_callback:
-        run_kwargs["score_callback"] = simulate_and_score
-    else:
-        log_status("MultiAgentManager.run 不支持 score_callback，使用启发式评分")
-
-    try:
-        best_agent, best_payload, run_stats = manager.run(**run_kwargs)
-    except TypeError as exc:
-        # Ultimate compatibility guard: re-run without score_callback if the
-        # implementation unexpectedly rejects it.
-        log_status(f"MultiAgentManager.run 调用失败，回退无 score_callback: {exc}")
-        run_kwargs.pop("score_callback", None)
-        best_agent, best_payload, run_stats = manager.run(**run_kwargs)
     best_payload.setdefault("seed", seed)
     log_status(f"多智能体完成评分，选中代理: {best_agent.name}, 场景: {best_agent.scenario.name}")
 
