@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import inspect
+import importlib
 import random
 import sys
 import time
@@ -25,7 +27,25 @@ from agents.evaluators import SimpleImpactEvaluator
 from agents.protocol_agent import ProtocolAttackAgent
 from agents.satellite_agent import SatelliteDamageAgent
 from llm_client import LLMScenarioGenerator
-from Threat_Define.simulation.multi_agent_manager import MultiAgentManager
+def _resolve_multi_agent_manager():
+    """Ensure we load the score_callback-capable MultiAgentManager implementation."""
+
+    mam_module = importlib.import_module("Threat_Define.simulation.multi_agent_manager")
+    manager_cls = getattr(mam_module, "MultiAgentManager")
+    sig = inspect.signature(manager_cls.run)
+    params = sig.parameters
+    supports_score_callback = "score_callback" in params or any(
+        p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values()
+    )
+    assert supports_score_callback, (
+        "Imported MultiAgentManager.run does not accept score_callback; "
+        "check Threat_Define.simulation import path and ensure the updated implementation "
+        f"is loaded (module={mam_module.__file__})."
+    )
+    return manager_cls
+
+
+MultiAgentManager = _resolve_multi_agent_manager()
 from simulation.solar_storm_model import SolarStormNodeOutageModel
 from simulation.environment import LEONetworkModel
 from simulation.evaluation import (
@@ -46,14 +66,6 @@ from threat_scenarios.base import ScenarioContext
 assert (
     "score_callback" in MultiAgentManager.run.__code__.co_varnames
 ), "Imported MultiAgentManager.run does not accept score_callback; check Threat_Define.simulation import path."
-
-
-# Registry of supported threat models so they can be constructed from JSON configs.
-THREAT_REGISTRY = {
-    "solar_storm_node_outage": SolarStormNodeOutageModel,
-    # "congestion_attack": CongestionModel,
-    # "protocol_attack": ProtocolAttackModel,
-}
 
 
 # Registry of supported threat models so they can be constructed from JSON configs.
