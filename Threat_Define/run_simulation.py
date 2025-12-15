@@ -403,9 +403,20 @@ def main() -> None:
             "seed": seed,
         }
 
-    best_agent, best_payload, run_stats = _invoke_manager_run(
-        manager, context, simulate_and_score
+    # Prefer closed-loop scoring when the manager supports score_callback; otherwise
+    # fall back to heuristic scoring to avoid unexpected keyword errors.
+    run_sig = inspect.signature(manager.run)
+    run_params = run_sig.parameters
+    supports_callback = "score_callback" in run_params or any(
+        p.kind == inspect.Parameter.VAR_KEYWORD for p in run_params.values()
     )
+    if supports_callback:
+        best_agent, best_payload, run_stats = manager.run(
+            context=context, score_callback=simulate_and_score
+        )
+    else:
+        log_status("MultiAgentManager.run 不支持 score_callback，使用启发式评分")
+        best_agent, best_payload, run_stats = manager.run(context=context)
     best_payload.setdefault("seed", seed)
     log_status(f"多智能体完成评分，选中代理: {best_agent.name}, 场景: {best_agent.scenario.name}")
 
